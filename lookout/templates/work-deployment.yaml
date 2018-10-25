@@ -1,30 +1,28 @@
-{{- if eq (empty .Values.app.lookout.secretName) (empty .Values.providers.github.private_key) }}
-{{- fail "You have to set either app.lookout.secretName or providers.github.private_key but not both" }}
-{{- end }}
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  name: {{ template "lookout.fullname" . }}
+  name: {{ template "lookout.fullname" . }}-work
   labels:
-    app: {{ template "lookout.name" . }}
+    app: {{ template "lookout.name" . }}-work
     chart: {{ template "lookout.chart" . }}
     release: {{ .Release.Name }}
     heritage: {{ .Release.Service }}
 spec:
-  replicas: {{ .Values.replicaCount.lookout }}
+  replicas: {{ .Values.replicaCount.work }}
   selector:
     matchLabels:
-      app: {{ template "lookout.name" . }}
+      app: {{ template "lookout.name" . }}-work
       release: {{ .Release.Name }}
   template:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/lookout-configmap.yaml") . | sha256sum }}
       labels:
-        app: {{ template "lookout.name" . }}
+        app: {{ template "lookout.name" . }}-work
         release: {{ .Release.Name }}
     spec:
       volumes:
+{{ include "bblfshd-sidecar.volumes" . | indent 8 }}
         - name: lookout-configuration-volume
           configMap:
             name: {{ template "lookout.fullname" . }}-lookout-configuration
@@ -60,14 +58,15 @@ spec:
               mountPath: /secrets/cloudsql
               readOnly: true
       {{- end }}
-        - name: lookout
+{{ include "bblfshd-sidecar.containers" . | indent 8 }}
+        - name: lookout-work
           image: "{{ .Values.image.lookout.repository }}:{{ required "Missing image.lookout.tag" .Values.image.lookout.tag }}"
           imagePullPolicy: {{ .Values.image.lookout.pullPolicy }}
           args:
-            - serve
+            - work
           env:
             - name: LOOKOUT_DATA_SERVER
-              value: "ipv4://0.0.0.0:{{ .Values.app.lookout.port }}"
+              value: "ipv4://0.0.0.0:{{ .Values.app.work.port }}"
             {{- if .Values.app.lookout.secretName }}
             - name: GITHUB_USER
               valueFrom:
@@ -81,13 +80,15 @@ spec:
                   key: githubToken
             {{- end }}
             - name: LOOKOUT_BBLFSHD
-              value: "{{ required "Missing app.lookout.bblfshdConnectionString " .Values.app.lookout.bblfshdConnectionString }}"
+              value: "ipv4://localhost:9432"
             - name: LOOKOUT_DB
               {{- if .Values.databases.postgres.cloudSQL }}
               valueFrom:
                 secretKeyRef:
                   name: {{ required "Missing databases.postgres.connectionDetailsSecret" .Values.databases.postgres.connectionDetailsSecret }}
                   key: LOOKOUT_DB
+              {{- else }}
+              value: {{ required "missing databases.postgres.dbConnectionString" .Values.databases.postgres.dbConnectionString }}
               {{- end }}
             - name: LOG_FORMAT
               value: "{{ .Values.app.lookout.logFormat }}"
@@ -109,6 +110,12 @@ spec:
             {{- end }}
             - name: LOOKOUT_PROBES_ADDRESS
               value: "0.0.0.0:{{ .Values.app.lookout.probesPort }}"
+            - name: LOOKOUT_QUEUE
+              value: "{{ .Values.app.lookout.queue }}"
+            - name: LOOKOUT_BROKER
+              value: "amqp://{{ .Release.name }}-rabbitmq-ha:5672"
+            - name: LOOKOUT_WORKERS
+              value: "{{ .Values.app.watch.workers }}"
           volumeMounts:
             - name: lookout-configuration-volume
               mountPath: /local/lookout/config.yaml
@@ -120,7 +127,7 @@ spec:
               subPath: {{ last $pathParts }}
             {{- end }}
           ports:
-            - containerPort: {{ .Values.app.lookout.port }}
+            - containerPort: {{ .Values.app.work.port }}
               protocol: TCP
           livenessProbe:
             httpGet:
